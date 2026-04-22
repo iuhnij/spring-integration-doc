@@ -575,6 +575,18 @@ AT 模式本质依赖关系型数据库的数据源代理、SQL 解析、before 
 
 ### 16.3 Spring Integration + Seata + Mongo + publishSubscribe + aggregate 时序图
 
+
+* 入口服务用 **Spring Integration** 编排流程
+* 用 **publishSubscribe** 并发调用 A / B / C
+* 用 **aggregate** 等待三个分支结果
+* 用 **Seata TCC** 做全局事务协调
+* 每个服务内部如果有多文档写入，用 **Mongo 事务**
+* Mongo 事务要求 **Replica Set / Sharded Cluster**，不能是普通 standalone；而 `publishSubscribe` 下如果后面接 `Aggregator`，要开启 `apply-sequence`，这样才会自动带上 `CORRELATION_ID / SEQUENCE_NUMBER / SEQUENCE_SIZE`。([MongoDB][1])
+
+---
+
+## 1）完整时序图
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -596,41 +608,33 @@ sequenceDiagram
     TM->>TC: begin global transaction
     TC-->>TM: 返回 XID
 
-    TM->>SI: 进入 SI 主流程
-携带 XID / bizId
+    TM->>SI: 进入 SI 主流程<br/>携带 XID / bizId
     SI->>PSC: publishSubscribe(apply-sequence=true)
 
-    Note over PSC: 广播为 3 个分支消息
-自动补充 correlationId / sequenceNumber / sequenceSize
+    Note over PSC: 广播为 3 个分支消息<br/>自动补充 correlationId / sequenceNumber / sequenceSize
 
     par Branch A
-        PSC->>A: WebClient 调用 A
-Header: XID,bizId,correlationId
+        PSC->>A: WebClient 调用 A<br/>Header: XID,bizId,correlationId
         A->>A: bind XID
-        A->>MA: Try 阶段写入 Mongo
-status=TRYING
+        A->>MA: Try阶段写入 Mongo<br/>status=TRYING
         MA-->>A: 本地成功
         A-->>SI: 返回 A=SUCCESS
     and Branch B
-        PSC->>B: WebClient 调用 B
-Header: XID,bizId,correlationId
+        PSC->>B: WebClient 调用 B<br/>Header: XID,bizId,correlationId
         B->>B: bind XID
-        B->>MB: Try 阶段写入 Mongo
-status=TRYING
+        B->>MB: Try阶段写入 Mongo<br/>status=TRYING
         MB-->>B: 本地成功
         B-->>SI: 返回 B=SUCCESS
     and Branch C
-        PSC->>C: WebClient 调用 C
-Header: XID,bizId,correlationId
+        PSC->>C: WebClient 调用 C<br/>Header: XID,bizId,correlationId
         C->>C: bind XID
-        C->>MC: Try 阶段写入 Mongo
-status=TRYING
+        C->>MC: Try阶段写入 Mongo<br/>status=TRYING
         MC-->>C: 本地失败 / 超时 / 异常
         C-->>SI: 返回 C=FAIL
     end
 
     SI->>AGG: 按 correlationId 聚合结果
-    AGG-->>SI: 收到 A / B / C 三个分支结果
+    AGG-->>SI: 收到 A/B/C 三个分支结果
 
     alt 全部成功
         SI->>TM: 聚合成功
@@ -670,6 +674,7 @@ status=TRYING
     end
 ```
 
+**publishSubscribe 和 aggregate 属于 SI；begin / commit / rollback 属于 Seata；Mongo 只负责各服务内部本地事务与数据持久化。** Spring Integration 自己不提供跨服务原子提交，它提供的是消息流事务支持与流程编排；Seata 的 `GlobalTransaction` 才负责全局 begin / commit / rollback.
 
 主流程：
 
