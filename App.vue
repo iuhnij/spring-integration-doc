@@ -3,13 +3,25 @@
     <aside class="left-panel">
       <h3>组件</h3>
 
-      <el-button @click="addNode('DIRECT_CHANNEL')">DirectChannel</el-button>
-      <el-button @click="addNode('QUEUE_CHANNEL')">QueueChannel</el-button>
-      <el-button @click="addNode('ENRICH_HEADERS')">EnrichHeaders</el-button>
-      <el-button @click="addNode('TRANSFORM')">Transform</el-button>
-      <el-button @click="addNode('SERVICE_ACTIVATOR')">ServiceActivator</el-button>
+      <div
+        v-for="group in groupedComponents"
+        :key="group.category"
+        class="component-group"
+      >
+        <div class="group-title">{{ group.category }}</div>
 
-      <el-button type="primary" @click="exportJson">导出 JSON</el-button>
+        <el-button
+          v-for="component in group.items"
+          :key="component.type"
+          @click="addNode(component.type)"
+        >
+          {{ component.label }}
+        </el-button>
+      </div>
+
+      <el-button type="primary" @click="handleExportJson">
+        导出 JSON
+      </el-button>
     </aside>
 
     <main class="canvas">
@@ -26,7 +38,7 @@
       <h3>节点配置</h3>
 
       <div v-if="selectedNode">
-        <el-form label-width="100px">
+        <el-form label-width="110px">
           <el-form-item label="节点ID">
             <el-input v-model="selectedNode.id" disabled />
           </el-form-item>
@@ -39,124 +51,125 @@
             <el-input v-model="selectedNode.data.label" />
           </el-form-item>
 
-          <el-form-item
-            v-if="selectedNode.data.componentType === 'TRANSFORM'"
-            label="表达式"
-          >
-            <el-input v-model="selectedNode.data.expression" />
-          </el-form-item>
+          <template v-if="selectedComponentMeta">
+            <el-form-item
+              v-for="field in selectedComponentMeta.configSchema"
+              :key="field.field"
+              :label="field.label"
+              :required="field.required"
+            >
+              <el-input
+                v-if="field.type === 'text'"
+                v-model="selectedNode.data[field.field]"
+                :placeholder="field.placeholder"
+              />
 
-          <el-form-item
-            v-if="selectedNode.data.componentType === 'SERVICE_ACTIVATOR'"
-            label="Bean名称"
-          >
-            <el-input v-model="selectedNode.data.beanName" />
-          </el-form-item>
-
-          <el-form-item
-            v-if="selectedNode.data.componentType === 'SERVICE_ACTIVATOR'"
-            label="方法名"
-          >
-            <el-input v-model="selectedNode.data.methodName" />
-          </el-form-item>
-
-          <el-form-item
-            v-if="selectedNode.data.componentType === 'ENRICH_HEADERS'"
-            label="Header"
-          >
-            <el-input
-              v-model="selectedNode.data.headersText"
-              type="textarea"
-              placeholder='例如：{"traceId":"headers[\"traceId\"]"}'
-            />
-          </el-form-item>
+              <el-input
+                v-else-if="field.type === 'textarea'"
+                v-model="selectedNode.data[field.field]"
+                type="textarea"
+                :rows="4"
+                :placeholder="field.placeholder"
+              />
+            </el-form-item>
+          </template>
         </el-form>
       </div>
 
-      <div v-else>请选择一个节点</div>
+      <div v-else class="empty-config">
+        请选择一个节点
+      </div>
     </aside>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { VueFlow, useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/core'
+import { computed, ref } from 'vue'
+import {
+  VueFlow,
+  MarkerType,
+  type Connection,
+  type Edge,
+  type Node
+} from '@vue-flow/core'
+
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 
+import {
+  componentRegistry,
+  getComponentMeta,
+  type ComponentType
+} from './registry/componentRegistry'
+
+import { exportFlowJson } from './utils/flowExporter'
+
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
-const selectedNode = ref<Node | null>(null)
-
-const { addEdges } = useVueFlow()
+const selectedNode = ref<any | null>(null)
 
 let nodeIndex = 1
 
-function addNode(componentType: string) {
+const groupedComponents = computed(() => {
+  const map = new Map<string, typeof componentRegistry>()
+
+  componentRegistry.forEach(component => {
+    if (!map.has(component.category)) {
+      map.set(component.category, [])
+    }
+
+    map.get(component.category)!.push(component)
+  })
+
+  return Array.from(map.entries()).map(([category, items]) => ({
+    category,
+    items
+  }))
+})
+
+const selectedComponentMeta = computed(() => {
+  const componentType = selectedNode.value?.data?.componentType
+  if (!componentType) {
+    return undefined
+  }
+
+  return getComponentMeta(componentType)
+})
+
+function addNode(componentType: ComponentType) {
+  const meta = getComponentMeta(componentType)
+
+  if (!meta) {
+    return
+  }
+
   const id = `node-${nodeIndex++}`
 
   nodes.value.push({
     id,
     position: {
-      x: 120 + nodeIndex * 20,
-      y: 100 + nodeIndex * 20
+      x: 150 + nodeIndex * 20,
+      y: 120 + nodeIndex * 20
     },
-    data: createNodeData(componentType)
+    data: {
+      componentType,
+      ...meta.defaultConfig
+    }
   })
 }
 
-function createNodeData(componentType: string) {
-  if (componentType === 'DIRECT_CHANNEL') {
-    return {
-      label: 'DirectChannel',
-      componentType,
-      name: 'inputChannel'
-    }
-  }
-
-  if (componentType === 'QUEUE_CHANNEL') {
-    return {
-      label: 'QueueChannel',
-      componentType,
-      name: 'queueChannel'
-    }
-  }
-
-  if (componentType === 'ENRICH_HEADERS') {
-    return {
-      label: 'EnrichHeaders',
-      componentType,
-      headersText: '{"traceId":"headers[\\"traceId\\"]"}'
-    }
-  }
-
-  if (componentType === 'TRANSFORM') {
-    return {
-      label: 'Transform',
-      componentType,
-      expression: 'payload'
-    }
-  }
-
-  if (componentType === 'SERVICE_ACTIVATOR') {
-    return {
-      label: 'ServiceActivator',
-      componentType,
-      beanName: 'demoService',
-      methodName: 'handle'
-    }
-  }
-
-  return {
-    label: componentType,
-    componentType
-  }
-}
-
 function onConnect(connection: Connection) {
-  addEdges({
-    ...connection,
-    id: `edge-${connection.source}-${connection.target}`
+  if (!connection.source || !connection.target) {
+    return
+  }
+
+  edges.value.push({
+    id: `edge-${connection.source}-${connection.target}-${Date.now()}`,
+    source: connection.source,
+    target: connection.target,
+    sourceHandle: connection.sourceHandle,
+    targetHandle: connection.targetHandle,
+    markerEnd: MarkerType.ArrowClosed
   })
 }
 
@@ -164,22 +177,10 @@ function onNodeClick(event: any) {
   selectedNode.value = event.node
 }
 
-function exportJson() {
-  const flowJson = {
-    flowName: 'demoFlow',
-    nodes: nodes.value.map(node => ({
-      id: node.id,
-      type: node.data.componentType,
-      position: node.position,
-      config: { ...node.data }
-    })),
-    edges: edges.value.map(edge => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target
-    }))
-  }
+function handleExportJson() {
+  const flowJson = exportFlowJson(nodes.value as any[], edges.value as any[])
 
+  console.log('导出的流程 JSON：')
   console.log(JSON.stringify(flowJson, null, 2))
 }
 </script>
@@ -191,12 +192,25 @@ function exportJson() {
 }
 
 .left-panel {
-  width: 220px;
+  width: 240px;
   padding: 16px;
   border-right: 1px solid #ddd;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+}
+
+.component-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-title {
+  font-size: 13px;
+  font-weight: bold;
+  color: #666;
+  margin-bottom: 4px;
 }
 
 .canvas {
@@ -204,9 +218,14 @@ function exportJson() {
 }
 
 .right-panel {
-  width: 320px;
+  width: 360px;
   padding: 16px;
   border-left: 1px solid #ddd;
+}
+
+.empty-config {
+  color: #999;
+  font-size: 14px;
 }
 
 .el-button {
